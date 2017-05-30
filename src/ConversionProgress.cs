@@ -23,6 +23,7 @@ namespace GeckofxHtmlToPdf
 			_conversionOrder = conversionOrder;
 			InitializeComponent();
 			_progressBar.Maximum = 100;
+			_progressBar.Style = ProgressBarStyle.Continuous;
 			if (conversionOrder.NoUIMode)
 			{
 				this.WindowState = FormWindowState.Minimized;
@@ -49,8 +50,15 @@ namespace GeckofxHtmlToPdf
 			Close();
 		}
 
+		private delegate void ChangeStatus(object sender, PdfMakingStatus pdfMakingStatus);
+
 		private void OnPdfMaker_StatusChanged(object sender, PdfMakingStatus pdfMakingStatus)
 		{
+			if (this.InvokeRequired)
+			{
+				this.Invoke(new ChangeStatus(OnPdfMaker_StatusChanged), new object[] { sender, pdfMakingStatus });
+				return;
+			}
 			_statusLabel.Text = pdfMakingStatus.statusLabel;
 			_progressBar.Value = pdfMakingStatus.percentage;
 		}
