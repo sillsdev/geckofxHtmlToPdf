@@ -6,6 +6,8 @@ using System.IO;
 using Gecko;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
+using System.Diagnostics;
+using System.Windows.Forms;
 
 namespace GeckofxHtmlToPdf
 {
@@ -85,10 +87,8 @@ namespace GeckofxHtmlToPdf
 			{
 				_browser.ConsoleMessage += OnBrowserConsoleMessage;
 			}
-			
-			var tempFileName = Path.GetTempFileName();
-			File.Delete(tempFileName);
-			_pathToTempPdf = tempFileName + ".pdf"; 
+
+			_pathToTempPdf = GetTemporaryPdfFilename();
 			File.Delete(_conversionOrder.OutputPdfPath);
 			_checkForBrowserNavigatedTimer.Enabled = true;
 			Status = "Loading Html...";
@@ -102,6 +102,13 @@ namespace GeckofxHtmlToPdf
 			_browser.Size = new Size(1920, 1320);
 
 			_browser.Navigate(_conversionOrder.InputHtmlPath);
+		}
+
+		private string GetTemporaryPdfFilename()
+		{
+			var newTempFile = Path.GetTempFileName();
+			File.Delete(newTempFile);
+			return newTempFile + ".pdf";
 		}
 
 		protected virtual void RaiseStatusChanged(PdfMakingStatus e)
@@ -310,6 +317,15 @@ namespace GeckofxHtmlToPdf
 
 			try
 			{
+				if (_conversionOrder.ShrinkPdfFile)
+				{
+					var shrunkFile = CallGsToShrinkPdf();
+					if (!String.IsNullOrEmpty(shrunkFile))
+					{
+						File.Delete(_pathToTempPdf);
+						_pathToTempPdf = shrunkFile;
+					}
+				}
 				File.Move(_pathToTempPdf, _conversionOrder.OutputPdfPath);
 				RaiseFinished();
 			}
@@ -443,6 +459,158 @@ namespace GeckofxHtmlToPdf
 
 		public void OnSecurityChange(nsIWebProgress aWebProgress, nsIRequest aRequest, uint aState)
 		{
+		}
+
+		#endregion
+
+		#region Ghostscript fiddling with output PDF
+
+		/// <summary>
+		/// The Mozilla code can produce HUGE PDF files especially if you have a number of color photograph files
+		/// displayed in the HTML.  So we use ghostscript to reduce the size of those files by redoing the image
+		/// data and compressing it.
+		/// </summary>
+		/// <returns>
+		/// path the the shrunk PDF file if successful, null if an error occurs or the file produced by ghostscript
+		/// is actually larger.  This file is in the temporary folder area.
+		/// </returns>
+		/// <remarks>
+		/// See http://issues.bloomlibrary.org/youtrack/issue/BL-3721.
+		/// </remarks>
+		private string CallGsToShrinkPdf()
+		{
+			RaiseStatusChanged(new PdfMakingStatus() { percentage = 0, statusLabel = "Shrinking PDF..." });
+			var newTempFile = GetTemporaryPdfFilename(); 
+			var info = new ProcessStartInfo
+			{
+				FileName = "gs",	// if installed on Linux, has simple name and will be in the path
+				Arguments = String.Format("-sDEVICE=pdfwrite -dBATCH -dNOPAUSE -dCompatibilityLevel=1.4 -dDownsampleColorImages=true -dColorImageResolution=600 -sOutputFile=\"{0}\" \"{1}\"",
+					newTempFile, _pathToTempPdf),
+				UseShellExecute = false,		// false for redirection
+				RedirectStandardOutput = true	// redirect for event handler reading asynchronously
+			};
+
+			try
+			{
+				Process gsProcess = new Process();
+				gsProcess.StartInfo = info;
+				if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+					gsProcess.StartInfo.FileName = FindGhostcriptOnWindows();
+				gsProcess.OutputDataReceived += ShrinkOutputHandler;
+				gsProcess.Start();
+				gsProcess.BeginOutputReadLine();	// get asynchronous output
+
+				gsProcess.WaitForExit(600000);		// timeout - 10 minutes? 1 minutes? 5 minutes? 30 sec?
+				gsProcess.OutputDataReceived -= ShrinkOutputHandler;
+
+				if (File.Exists(newTempFile) && gsProcess.ExitCode == 0)
+				{
+					var oldInfo = new FileInfo(_pathToTempPdf);
+					var newInfo = new FileInfo(newTempFile);
+					// If the process actually made the file larger, ignore the result (and delete it).
+					if (newInfo.Length < oldInfo.Length)
+						return newTempFile;
+					File.Delete(newTempFile);
+				}
+			}
+			catch (Exception ex)
+			{
+				// If something bad happens, well, that means we can't shrink the file.  Keep going.
+				// On Windows, we should tell the user about downloading ghostscript.
+				// Except that this gets way too intrusive quickly.  We need to tell the user at least
+				// once, but how do we control (not) repeating the message?
+				//if (info.FileName == "gswin32.exe")
+				//{
+				//	var msg = "Cannot shrink the PDF because ghostscript cannot be found on this computer.  It can be downloaded from https://ghostscript.com/download/.";
+				//	var header = "Cannot shrink PDF";
+				//	MessageBox.Show(msg, header, MessageBoxButtons.OK, MessageBoxIcon.Information);
+				//}
+			}
+			return null;
+		}
+
+		/// <summary>
+		/// Try to find ghostscript on the Windows system, looking in the likeliest installation
+		/// locations and trying to not depend on the exact version installed.
+		/// </summary>
+		/// <remarks>
+		/// Ghostscript 9.21 for 64-bit Windows 10 installs by default as
+		/// C:\Program Files\gs\gs9.21\bin\gswin64c.exe or C:\Program Files\gs\gs9.21\bin\gswin64.exe.
+		/// The former uses the current console window, the latter pops up its own command window.
+		/// </remarks>
+		private string FindGhostcriptOnWindows()
+		{
+			var baseName = "gswin32";
+			if (Environment.Is64BitOperatingSystem)
+				baseName = "gswin64";
+			// Look for the four most common installation locations.
+			var baseDir = @"C:\Program Files\gs";
+			if (!Directory.Exists(baseDir))
+				baseDir = @"C:\Program Files (x86)\gs";
+			if (!Directory.Exists(baseDir))
+				baseDir = @"D:\Program Files\gs";
+			if (!Directory.Exists(baseDir))
+				baseDir = @"D:\Program Files (x86)\gs";
+			if (!Directory.Exists(baseDir))
+				return baseName + ".exe";   // almost certainly won't work, but we can't scan the whole disk!
+			foreach (var versionDir in Directory.GetDirectories(baseDir))
+			{
+				var prog = Path.Combine(versionDir, "bin", baseName + "c.exe");
+				if (File.Exists(prog))
+					return prog;
+				prog = Path.Combine(versionDir, "bin", baseName + ".exe");
+				if (File.Exists(prog))
+					return prog;
+			}
+			return baseName + ".exe";
+		}
+
+		int _firstPage;
+		int _numPages;
+
+		/// <summary>
+		/// Parse the standard output from ghostscript to feed the progress reporting.
+		/// </summary>
+		private void ShrinkOutputHandler(object sendingProcess, DataReceivedEventArgs outputLine)
+		{
+			var line = outputLine.Data;
+			if (String.IsNullOrEmpty(line))
+				return;
+
+			if (line.StartsWith("Processing pages ") && line.Contains(" through "))
+			{
+				_firstPage = 0;
+				int lastPage = 0;
+				_numPages = 0;
+				// Get the first and last page numbers processed and the total number of pages.
+				var idxNumber = 17;
+				var idxMid = line.IndexOf(" through ");
+				if (idxMid > idxNumber && !Int32.TryParse(line.Substring(idxNumber, idxMid - idxNumber), out _firstPage))
+					_firstPage = 0;
+				idxNumber = idxMid + 9;
+				var idxPeriod = line.IndexOf(".", idxNumber);
+				if (idxPeriod > idxNumber && !Int32.TryParse(line.Substring(idxNumber, idxPeriod - idxNumber), out lastPage))
+					lastPage = 0;
+				if (_firstPage > 0 && lastPage > 0)
+					_numPages = lastPage - _firstPage + 1;
+			}
+			else if (line.StartsWith("Page "))
+			{
+				// Get the current page number and adjust the progress dialog appropriately.
+				int pageNumber = 0;
+				if (Int32.TryParse(line.Substring(5), out pageNumber) && _numPages > 0)
+				{
+					Status = String.Format("Shrinking page {0} of {1}", pageNumber, _numPages);
+					try
+					{
+						RaiseStatusChanged(new PdfMakingStatus() { percentage = (int)(100.0F * (float)(pageNumber - _firstPage) / (float)_numPages), statusLabel = Status });
+					}
+					catch (ObjectDisposedException e)
+					{
+						// Don't worry about not being able to update while/after the progress dialog is closing/has closed.
+					}
+				}
+			}
 		}
 
 		#endregion

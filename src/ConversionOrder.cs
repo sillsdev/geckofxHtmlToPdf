@@ -68,6 +68,11 @@ namespace GeckofxHtmlToPdf
 		[Args.ArgsMemberSwitch("-report-memory")]
 		public bool ReportMemoryUsage { get; set; }
 
+		[Description("Shrink the PDF output with ghostscript")]
+		[DefaultValue(false)]
+		[Args.ArgsMemberSwitch("-shrink-pdf")]
+		public bool ShrinkPdfFile { get; set; }
+
 		private double GetMillimeters(string distance)
 		{
 			//TODO: convert to mm. For now, just strips "mm"
