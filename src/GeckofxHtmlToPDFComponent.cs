@@ -1,11 +1,19 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
 using Gecko;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.IO;
+using Timer = System.Threading.Timer;
 
 namespace GeckofxHtmlToPdf
 {
@@ -366,24 +374,216 @@ namespace GeckofxHtmlToPdf
 
 		private void CombinePageFilesTogether()
 		{
+			// We previously did this using PdfSharp in the same process, but could not get the memory usage
+			// reasonable for large files. So now we run ghostscript in a separate process.
+			// It would be nice to put the arguments in a file so we don't have to worry about the command line
+			// getting too long. Ghostscript supports this with @argFileName, but it does not expect the content
+			// of that file to include non-ascii text encoded in UTF-8. What it does expect is undocumented
+			// as far as I can find, which probably means the current system code page, which can't be relied on
+			// to be able to encode the file paths. I did get it working with all temp files (including the output,
+			// which I then had to copy to the desired name); but it's quite possible that the user's temp folder
+			// has a non-ascii path (typically includes the user's name), so it just wasn't possible to make
+			// that reliable. For the operating systems we support (post-XP), the command line can go to 32K,
+			// which is enough for 300+ pages at 100 characters per temp file path. I think we're less likely to
+			// have trouble with that than with non-ASCII characters.
+			// There would be some advantage in moving the process of merging the files back into Bloom itself.
+			// We would avoid duplicating a couple of hundred lines of code which is needed to find Ghostscript,
+			// and possibly could combine the tasks of merging the files and compressing them into a single
+			// Ghostscript run. However, it requires Bloom (and any other clients) to have a much deeper knowledge
+			// of how GeckoHtmlToPdf and the ReduceMemoryUse option work, some way to communicate the location
+			// of the temp files, different handling of results in Bloom with and without ReduceMemoryUse...
+			// overall I decided this is better, unless we're really desperate for a slight improvement in the
+			// time it takes to PDF a large book.
+#if __MonoCS__
+			var gsPath = "/usr/bin/gs";
+#else
+			var gsPath = FindGhostcriptOnWindows();
+#endif
 			var filenames = GetPageFilenames();
-			PdfDocument outputDocument = new PdfDocument();
+			var arguments = "-sDEVICE=pdfwrite -dNOPAUSE -dBATCH -dSAFER -sOutputFile=\"" + _conversionOrder.OutputPdfPath + "\" "  + 
+			                String.Join(" ", filenames.Select(x => "\"" + x + "\""));
 			Status = "Combining pages into final PDF file...";
-			for (int i = 0; i < filenames.Count; ++i)
-			{
-				RaiseStatusChanged(new PdfMakingStatus() { percentage = (int)((float)i / (float)filenames.Count), statusLabel = Status });
-				var file = filenames[i];
-				using (PdfDocument inputDocument = PdfReader.Open(file, PdfDocumentOpenMode.Import))
-				{
-					System.Diagnostics.Debug.Assert(inputDocument.PageCount == 1);
-					PdfPage page = inputDocument.Pages[0];
-					outputDocument.AddPage(page);
-				}
-			}
-			outputDocument.Save(_conversionOrder.OutputPdfPath);
+			RaiseStatusChanged(new PdfMakingStatus() { percentage = (int)((float)0 / (float)filenames.Count), statusLabel = Status });
+			var result = Start(gsPath, arguments, Encoding.UTF8, "", 3600);
+
 			// remove the page files that are no longer needed
 			foreach (string file in filenames)
 				File.Delete(file);
+
+			if (!string.IsNullOrEmpty(result))
+			{
+				throw new ArgumentException(result);
+			}
+		}
+
+		public string Start(
+			string exePath,
+			string arguments,
+			Encoding encoding,
+			string fromDirectory,
+			int secondsBeforeTimeOut)
+		{
+			using (var process = new Process())
+			{
+				process.StartInfo.RedirectStandardError = true;
+				process.StartInfo.RedirectStandardOutput = true;
+				process.StartInfo.UseShellExecute = false;
+				process.StartInfo.CreateNoWindow = true;
+				process.StartInfo.WorkingDirectory = fromDirectory;
+				process.StartInfo.FileName = exePath;
+				process.StartInfo.Arguments = arguments;
+				if (encoding != null)
+					process.StartInfo.StandardOutputEncoding = encoding;
+				//MessageBox.Show(exePath + " " + arguments, "starting...");
+				process.Start();
+
+				// This was an attempt to figure out how much memory it uses. Results were difficult to believe,
+				// ranging from ~100k for a large file to ~2M for a small one. Leaving it here in case someone wants
+				// to try again.
+				//long peak = 0L;
+
+				//var timer = new Timer(x =>
+				//{
+				//	if (!_process.HasExited)
+				//	{
+				//		try
+				//		{
+				//			peak = Math.Max(peak, _process.PeakWorkingSet64);
+				//		}
+				//		catch (Exception)
+				//		{
+
+				//		}
+				//	}
+				//}, null, 20,10);
+
+				process.WaitForExit(secondsBeforeTimeOut * 1000);
+				//timer.Dispose();
+				////MessageBox.Show(_process.StandardError.ReadToEnd() + Environment.NewLine + _process.StandardOutput.ReadToEnd() + Environment.NewLine, "output");
+				//try
+				//{
+				//	MessageBox.Show(peak + " bytes used", "Peak working set");
+				//}
+				//catch (Exception e)
+				//{
+				//	MessageBox.Show("reporting memory threw " + e.Message);
+				//}
+
+				if (process.ExitCode == 0) return "";
+				// The Bloom version of this code has a lot more error checking, including for things like timeout.
+				// I think we can afford to simplify here, since if we don't get the output file we'll get an error anyway.
+				else return "Combining pages failed: " + process.StandardError.ReadToEnd();
+			}
+		}
+
+		/// <summary>
+		/// Copied from Bloom, assumes the same relative installation options as Bloom.
+		/// Try to find ghostscript on the Windows system, looking in the likeliest installation
+		/// locations and trying to not depend on the exact version installed.
+		/// </summary>
+		/// <returns>path to the ghostscript program, or null if not found</returns>
+		/// <remarks>
+		/// Ghostscript 9.21 for 64-bit Windows 10 installs by default as
+		/// C:\Program Files\gs\gs9.21\bin\gswin64c.exe or C:\Program Files\gs\gs9.21\bin\gswin64.exe.
+		/// The former uses the current console window, the latter pops up its own command window.
+		/// </remarks>
+		private string FindGhostcriptOnWindows()
+		{
+			// Look first for the barebones version distributed with Bloom 4.0 (and later presumably).
+			// Don't give up if you can't find it.
+			var basedir = DirectoryOfApplicationOrSolution;
+			var dir = Path.Combine(basedir, "ghostscript");
+			if (!Directory.Exists(dir))
+				dir = Path.Combine(basedir, "DistFiles", "ghostscript");
+			if (Directory.Exists(dir))
+			{
+				var filename = Path.Combine(dir, "gswin32c.exe");
+				if (File.Exists(filename))
+					return filename;
+			}
+			var baseName = "gswin32";
+			if (Environment.Is64BitOperatingSystem)
+				baseName = "gswin64";
+			// Look for the four most common installation locations.
+			var baseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "gs");
+			// GetFolderPath returns the wrong value on x64 system for x86 programs.
+			// See https://stackoverflow.com/questions/23304823/environment-specialfolder-programfiles-returns-the-wrong-directory.
+			baseDir = baseDir.Replace(" (x86)", "");
+			if (!Directory.Exists(baseDir))
+			{
+				baseDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "gs");
+				baseName = "gswin32";
+			}
+			if (!Directory.Exists(baseDir))
+				return null;
+			// gs9.18 works on Linux.  gs9.16 fails on Windows.  See BL-5295.
+			// We know gs9.21 works on Windows.
+			const float kMinVersion = 9.21F;
+			foreach (var versionDir in Directory.GetDirectories(baseDir))
+			{
+				var gsversion = Path.GetFileName(versionDir);
+				if (gsversion != null && gsversion.StartsWith("gs") && gsversion.Length > 2)
+				{
+					gsversion = gsversion.Substring(2);
+					float version;
+					if (float.TryParse(gsversion, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out version) ||
+						float.TryParse(gsversion, out version))     // In case it does get stored on the system in a culture-specific way.
+					{
+						if (version < kMinVersion)
+							continue;
+						var prog = Path.Combine(versionDir, "bin", baseName + "c.exe");
+						if (File.Exists(prog))
+							return prog;
+						prog = Path.Combine(versionDir, "bin", baseName + ".exe");
+						if (File.Exists(prog))
+							return prog;
+					}
+				}
+			}
+			return null;
+		}
+
+		// Some methods copied from libpalaso because we don't want to depend on it.
+		private static string Location
+		{
+			get
+			{
+				var assembly = Assembly.GetEntryAssembly();
+				return assembly == null ? "" : assembly.Location;
+			}
+		}
+		private static string DirectoryOfTheApplicationExecutable
+		{
+			get
+			{
+				string path;
+				bool unitTesting = Assembly.GetEntryAssembly() == null;
+				if (unitTesting)
+				{
+					path = new Uri(Assembly.GetExecutingAssembly().CodeBase).AbsolutePath;
+					path = Uri.UnescapeDataString(path);
+				}
+				else
+				{
+					path = Location;
+				}
+				return Directory.GetParent(path).FullName;
+			}
+		}
+		private static string DirectoryOfApplicationOrSolution
+		{
+			get
+			{
+				string path = DirectoryOfTheApplicationExecutable;
+				char sep = Path.DirectorySeparatorChar;
+				int i = path.ToLower().LastIndexOf(sep + "output" + sep);
+
+				if (i > -1)
+				{
+					path = path.Substring(0, i + 1);
+				}
+				return path;
+			}
 		}
 
 		private List<string> GetPageFilenames()
@@ -424,7 +624,7 @@ namespace GeckofxHtmlToPdf
 			_finished = (aStateFlags & nsIWebProgressListenerConstants.STATE_STOP) != 0;
 		}
 
-		#region nsIWebProgressListener
+#region nsIWebProgressListener
 
 		public void OnProgressChange(nsIWebProgress webProgress, nsIRequest request, int currentSelfProgress,
 		                             int maxSelfProgress,
@@ -456,7 +656,7 @@ namespace GeckofxHtmlToPdf
 		{
 		}
 
-		#endregion
+#endregion
 	}
 
 	public class PdfMakingStatus : EventArgs
