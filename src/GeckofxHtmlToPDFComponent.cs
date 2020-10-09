@@ -400,8 +400,32 @@ namespace GeckofxHtmlToPdf
 			var gsPath = FindGhostcriptOnWindows();
 #endif
 			var filenames = GetPageFilenames();
-			var arguments = "-sDEVICE=pdfwrite -dNOPAUSE -dBATCH -dSAFER -sOutputFile=\"" + _conversionOrder.OutputPdfPath + "\" "  + 
+			var bldr = new StringBuilder("-sDEVICE=pdfwrite -dNOPAUSE -dBATCH -dSAFER -dCompatibilityLevel=1.7");
+			// options BloomDesktop uses to prevent excessive compression.
+			// The first three are used for non-printshop output, hoping they are good enough that a later conversion
+			// to printshop won't do too badly.
+			bldr.Append(" -dColorImageResolution=600");
+			bldr.Append(" -dGrayImageResolution=600");
+			bldr.Append(" -dMonoImageResolution=1200");
+			bldr.Append(" -dDownsampleColorImages=true -dColorImageDownsampleThreshold=1.0");
+			bldr.Append(" -dDownsampleGrayImages=true -dGrayImageDownsampleThreshold=1.0");
+			bldr.Append(" -dDownsampleMonoImages=true -dMonoImageDownsampleThreshold=1.0");
+			// Ghostscript uses JPEG compression by default on all images when compressing a PDF file.
+			// The value in imageCompressDict provides the highest quality image using JPEG compression: best picture, least compression.
+			// See https://files.lfpp.csa.canon.com/media/Assets/PDFs/TSS/external/DPS400/Distillerpdfguide_v1_m56577569830529783.pdf#G5.1030935.
+			// The default setting here can result in visibly mottled areas of what should be solid colors.
+			// (See https://issues.bloomlibrary.org/youtrack/issue/BL-8928.)  Increasing the quality to the maximum
+			// does not totally eliminate this mottling effect, but makes it much less noticeable.
+			var imageCompressDict = "/QFactor 0.1 /Blend 1 /HSamples [1 1 1 1] /VSamples [1 1 1 1]";
+			bldr.AppendFormat(" -sColorACSImageDict=\"{0}\"", imageCompressDict);
+			bldr.AppendFormat(" -sColorImageDict=\"{0}\"", imageCompressDict);
+			bldr.AppendFormat(" -sGrayACSImageDict=\"{0}\"", imageCompressDict);
+			bldr.AppendFormat(" -sGrayImageDict=\"{0}\"", imageCompressDict);
+
+			bldr.AppendFormat(" -sOutputFile=\"" + _conversionOrder.OutputPdfPath + "\" ");
+			var arguments = bldr.ToString()  + 
 			                String.Join(" ", filenames.Select(x => "\"" + x + "\""));
+			//MessageBox.Show(arguments, "arguments");
 			Status = "Combining pages into final PDF file...";
 			RaiseStatusChanged(new PdfMakingStatus() { percentage = (int)((float)0 / (float)filenames.Count), statusLabel = Status });
 			var result = Start(gsPath, arguments, Encoding.UTF8, "", 3600);
