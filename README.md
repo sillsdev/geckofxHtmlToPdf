@@ -1,7 +1,7 @@
 geckofxHtmlToPdf
 ================
 
-Command line and .net component for making pdfs from html, using the Mozilla Gecko engine (which powers Firefox), as wrapped by [geckofx](https://bitbucket.org/geckofx "geckofx").  It can handle complex scripts and fonts that incorporate [SIL's Graphite](http://graphite.sil.org) rules.
+Command line and .net component for making pdfs from html, using the Mozilla Gecko engine (which powers Firefox), as wrapped by [geckofx](https://hg.sr.ht/~hindlemail/geckofx).  It can handle complex scripts and fonts that incorporate [SIL's Graphite](http://graphite.sil.org) rules.
 
 Basic command line:
 
@@ -25,20 +25,22 @@ NB: Currently the only units that are supported are millimeters.
 
 NB: Currently the input and output paths must precede the parameters (this appears to be a requirement of Args.dll).
 
-##Requirements##
+## Requirements
 
 .Net 4.0 Runtime or Mono equivalent
 
-##Building##
+## Building
 
 msbuild geckofxHtmlToPdf.sln (with any desired command line options like /p:Configuration=Release)
 
 The build process downloads the appropriate Geckofx (and Firefox) executables using NuGet, so an Internet connection is necessary at least to get started.
 
-##Limitation##
+## Limitation
 
 - We use this in a production desktop app and are quite happy with it. However it has one significant problem: it appears that gecko decompresses all images of the entire document into RAM, as simple bitmaps, at the same time. In large documents with many pictures (e.g. text books), this RAM exceeds how much a 32-bit program can use.  So far our customers doing these books have found that if they get their images down to 600 dpi, then there is enough RAM to create the PDF.
- 
+
+---
+
 Pull requests for others command line arguments are welcome. Please follow the [wkhtmltopdf](http://code.google.com/p/wkhtmltopdf/ "wkhtmltopdf") conventions.
 
 
