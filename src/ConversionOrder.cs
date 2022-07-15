@@ -28,22 +28,22 @@ namespace GeckofxHtmlToPdf
 		[Args.ArgsMemberSwitch("-graphite")]
 		public bool EnableGraphite { get; set; }
 
-		[Description("Set the page top margin")]
+		[Description("Set the page top margin (in millimeters)")]
 		[DefaultValue("10")]
 		[Args.ArgsMemberSwitch("T","-margin-top")]
 		public string TopMargin { get; set; }
 
-		[Description("Set the page bottom margin")]
+		[Description("Set the page bottom margin (in millimeters)")]
 		[DefaultValue("10")]
 		[Args.ArgsMemberSwitch("B", "-margin-bottom")]
 		public string BottomMargin { get; set; }
 
-		[Description("Set the page left margin")]
+		[Description("Set the page left margin (in millimeters)")]
 		[DefaultValue("10")]
 		[Args.ArgsMemberSwitch("L", "-margin-left")]
 		public string LeftMargin { get; set; }
 
-		[Description("Set the page right margin")]
+		[Description("Set the page right margin (in millimeters)")]
 		[DefaultValue("10")]
 		[Args.ArgsMemberSwitch("R", "-margin-right")]
 		public string RightMargin { get; set; }
