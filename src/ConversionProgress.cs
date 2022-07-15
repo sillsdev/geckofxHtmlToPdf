@@ -1,17 +1,14 @@
 ﻿using System;
-using System.Diagnostics;
 using System.IO;
 using System.Reflection;
-using System.Threading;
 using System.Windows.Forms;
 using Gecko;
 using System.Linq;
-using System.Configuration;
 
 namespace GeckofxHtmlToPdf
 {
 	/// <summary>
-	/// This class is used when the exe is called from the command line. It is invisibe
+	/// This class is used when the exe is called from the command line. It is invisible
 	/// if the --quiet parameter is used, otherwise it gives a little progress dialog.
 	/// </summary>
 	public partial class ConversionProgress : Form
@@ -23,6 +20,7 @@ namespace GeckofxHtmlToPdf
 			_conversionOrder = conversionOrder;
 			InitializeComponent();
 			_progressBar.Maximum = 100;
+			_progressBar.Style = ProgressBarStyle.Marquee;
 			if (_conversionOrder.NoUIMode)
 			{
 				this.WindowState = FormWindowState.Minimized;
@@ -79,6 +77,7 @@ namespace GeckofxHtmlToPdf
 			else
 			{
 				_statusLabel.Text = pdfMakingStatus.statusLabel;
+				_progressBar.Style = ProgressBarStyle.Continuous;
 				_progressBar.Value = pdfMakingStatus.percentage;
 			}
 		}
